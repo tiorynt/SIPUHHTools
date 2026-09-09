@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sipuhhtools.ui.home.HomeScreen
 import com.example.sipuhhtools.ui.home.SipuhhModule
+import com.example.sipuhhtools.ui.lhc.LhcScreen
 import com.example.sipuhhtools.ui.theme.SIPUHHToolsTheme
 
 class MainActivity : ComponentActivity() {
@@ -44,10 +45,10 @@ class MainActivity : ComponentActivity() {
 private fun SIPUHHToolsApp() {
     var selectedModule by remember { mutableStateOf<SipuhhModule?>(null) }
 
-    if (selectedModule == null) {
-        HomeScreen(onModuleClick = { selectedModule = it })
-    } else {
-        ModulePlaceholderScreen(
+    when (selectedModule) {
+        null -> HomeScreen(onModuleClick = { selectedModule = it })
+        SipuhhModule.LHC -> LhcScreen(onBack = { selectedModule = null })
+        else -> ModulePlaceholderScreen(
             module = selectedModule!!,
             onBack = { selectedModule = null }
         )
