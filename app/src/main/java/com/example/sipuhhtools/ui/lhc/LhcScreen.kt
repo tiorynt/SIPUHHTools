@@ -22,20 +22,26 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sipuhhtools.core.csv.LhcCsvParser
 import com.example.sipuhhtools.core.csv.LhcDetailRow
 import com.example.sipuhhtools.core.csv.LhcHeaderRow
 import com.example.sipuhhtools.core.csv.LhcJalurRow
 import com.example.sipuhhtools.core.csv.LhcPetakRow
+import com.example.sipuhhtools.database.SipuhhDatabase
+import com.example.sipuhhtools.repository.LhcRepository
+import kotlinx.coroutines.launch
 
 private val tabs = listOf("HDR", "PTK", "JLR", "DTL", "FND")
 
@@ -46,11 +52,16 @@ fun LhcScreen(
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current.applicationContext
+    val repository = remember {
+        LhcRepository(SipuhhDatabase.getInstance(context).lhcDao())
+    }
+    val scope = rememberCoroutineScope()
 
-    var headers by remember { mutableStateOf<List<LhcHeaderRow>>(emptyList()) }
-    var petaks by remember { mutableStateOf<List<LhcPetakRow>>(emptyList()) }
-    var jalurs by remember { mutableStateOf<List<LhcJalurRow>>(emptyList()) }
-    var details by remember { mutableStateOf<List<LhcDetailRow>>(emptyList()) }
+    val headers by repository.headers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val petaks by repository.petaks.collectAsStateWithLifecycle(initialValue = emptyList())
+    val jalurs by repository.jalurs.collectAsStateWithLifecycle(initialValue = emptyList())
+    val details by repository.details.collectAsStateWithLifecycle(initialValue = emptyList())
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -79,11 +90,25 @@ fun LhcScreen(
             }
 
             when (selectedTab) {
-                0 -> HeaderTab(headers) { headers = it }
-                1 -> PetakTab(petaks) { petaks = it }
-                2 -> JalurTab(jalurs) { jalurs = it }
-                3 -> DetailTab(details) { details = it }
-                else -> FindTab(headers.size, petaks.size, jalurs.size, details)
+                0 -> HeaderTab(headers) { rows ->
+                    scope.launch { repository.importHeaders(rows) }
+                }
+                1 -> PetakTab(petaks) { rows ->
+                    scope.launch { repository.importPetaks(rows) }
+                }
+                2 -> JalurTab(jalurs) { rows ->
+                    scope.launch { repository.importJalurs(rows) }
+                }
+                3 -> DetailTab(details) { rows ->
+                    scope.launch { repository.importDetails(rows) }
+                }
+                else -> FindTab(
+                    headerCount = headers.size,
+                    petakCount = petaks.size,
+                    jalurCount = jalurs.size,
+                    details = details,
+                    onClearAll = { scope.launch { repository.clearAll() } }
+                )
             }
         }
     }
@@ -108,8 +133,12 @@ private fun HeaderTab(
     onImported: (List<LhcHeaderRow>) -> Unit
 ) {
     val context = LocalContext.current
-    var kodeLhc by remember { mutableStateOf(rows.firstOrNull()?.kodeLhc.orEmpty()) }
+    var kodeLhc by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(rows.firstOrNull()) {
+        if (kodeLhc.isBlank()) kodeLhc = rows.firstOrNull()?.kodeLhc.orEmpty()
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -117,7 +146,7 @@ private fun HeaderTab(
             .onSuccess {
                 onImported(it)
                 kodeLhc = it.firstOrNull()?.kodeLhc.orEmpty()
-                status = "Berhasil import ${it.size} baris Header"
+                status = "Berhasil import ${it.size} baris Header. Data disimpan permanen."
             }
             .onFailure { status = "Gagal import: ${it.message}" }
     }
@@ -125,14 +154,14 @@ private fun HeaderTab(
     FormContainer {
         SectionTitle("Header Cruising")
         Field("Kode LHC", kodeLhc) { kodeLhc = it }
-        Button(onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
             Text("Import Header CSV")
         }
         if (status.isNotBlank()) StatusText(status)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { }, modifier = Modifier.weight(1f)) { Text("Simpan") }
-            Button(onClick = { kodeLhc = "" }, modifier = Modifier.weight(1f)) { Text("Header Baru") }
-        }
+        Text("Tersimpan: ${rows.size} header", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -142,10 +171,17 @@ private fun PetakTab(
     onImported: (List<LhcPetakRow>) -> Unit
 ) {
     val context = LocalContext.current
-    var kodeLhc by remember { mutableStateOf(rows.firstOrNull()?.kodeLhc.orEmpty()) }
-    var nomorPetak by remember { mutableStateOf(rows.firstOrNull()?.nomorPetak.orEmpty()) }
-    var luasPetak by remember { mutableStateOf(rows.firstOrNull()?.luasPetak.orEmpty()) }
+    var kodeLhc by remember { mutableStateOf("") }
+    var nomorPetak by remember { mutableStateOf("") }
+    var luasPetak by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(rows.firstOrNull()) {
+        val first = rows.firstOrNull() ?: return@LaunchedEffect
+        if (kodeLhc.isBlank()) kodeLhc = first.kodeLhc
+        if (nomorPetak.isBlank()) nomorPetak = first.nomorPetak
+        if (luasPetak.isBlank()) luasPetak = first.luasPetak
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -156,7 +192,7 @@ private fun PetakTab(
                 kodeLhc = first?.kodeLhc.orEmpty()
                 nomorPetak = first?.nomorPetak.orEmpty()
                 luasPetak = first?.luasPetak.orEmpty()
-                status = "Berhasil import ${it.size} baris Petak"
+                status = "Berhasil import ${it.size} baris Petak. Data disimpan permanen."
             }
             .onFailure { status = "Gagal import: ${it.message}" }
     }
@@ -166,11 +202,12 @@ private fun PetakTab(
         Field("Kode LHC", kodeLhc) { kodeLhc = it }
         Field("Nomor Petak", nomorPetak) { nomorPetak = it }
         Field("Luas Petak (hektar)", luasPetak) { luasPetak = it }
-        Button(onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
-            Text("Import Petak CSV")
-        }
+        Button(
+            onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Import Petak CSV") }
         if (status.isNotBlank()) StatusText(status)
-        Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Simpan") }
+        Text("Tersimpan: ${rows.size} petak", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -180,12 +217,21 @@ private fun JalurTab(
     onImported: (List<LhcJalurRow>) -> Unit
 ) {
     val context = LocalContext.current
-    var kodeLhc by remember { mutableStateOf(rows.firstOrNull()?.kodeLhc.orEmpty()) }
-    var nomorPetak by remember { mutableStateOf(rows.firstOrNull()?.petak.orEmpty()) }
-    var nomorJalur by remember { mutableStateOf(rows.firstOrNull()?.nomorJalur.orEmpty()) }
-    var arah by remember { mutableStateOf(rows.firstOrNull()?.arah ?: "UTARA") }
-    var panjang by remember { mutableStateOf(rows.firstOrNull()?.panjang.orEmpty()) }
+    var kodeLhc by remember { mutableStateOf("") }
+    var nomorPetak by remember { mutableStateOf("") }
+    var nomorJalur by remember { mutableStateOf("") }
+    var arah by remember { mutableStateOf("UTARA") }
+    var panjang by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(rows.firstOrNull()) {
+        val first = rows.firstOrNull() ?: return@LaunchedEffect
+        if (kodeLhc.isBlank()) kodeLhc = first.kodeLhc
+        if (nomorPetak.isBlank()) nomorPetak = first.petak
+        if (nomorJalur.isBlank()) nomorJalur = first.nomorJalur
+        if (panjang.isBlank()) panjang = first.panjang
+        arah = first.arah.ifBlank { "UTARA" }
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -198,7 +244,7 @@ private fun JalurTab(
                 nomorJalur = first?.nomorJalur.orEmpty()
                 arah = first?.arah ?: "UTARA"
                 panjang = first?.panjang.orEmpty()
-                status = "Berhasil import ${it.size} baris Jalur"
+                status = "Berhasil import ${it.size} baris Jalur. Data disimpan permanen."
             }
             .onFailure { status = "Gagal import: ${it.message}" }
     }
@@ -210,11 +256,12 @@ private fun JalurTab(
         Field("Nomor Jalur", nomorJalur) { nomorJalur = it }
         Field("Arah Jalur", arah) { arah = it }
         Field("Panjang Jalur (meter)", panjang) { panjang = it }
-        Button(onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
-            Text("Import Jalur CSV")
-        }
+        Button(
+            onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Import Jalur CSV") }
         if (status.isNotBlank()) StatusText(status)
-        Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Simpan") }
+        Text("Tersimpan: ${rows.size} jalur", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -224,19 +271,35 @@ private fun DetailTab(
     onImported: (List<LhcDetailRow>) -> Unit
 ) {
     val context = LocalContext.current
-    var kodeLhc by remember { mutableStateOf(rows.firstOrNull()?.kodeLhc.orEmpty()) }
-    var nomorPetak by remember { mutableStateOf(rows.firstOrNull()?.petak.orEmpty()) }
-    var nomorJalur by remember { mutableStateOf(rows.firstOrNull()?.jalur.orEmpty()) }
-    var nomorPohon by remember { mutableStateOf(rows.firstOrNull()?.nomorPohon.orEmpty()) }
-    var statusPohon by remember { mutableStateOf(rows.firstOrNull()?.status ?: "POHON TEBANG") }
-    var dataQr by remember { mutableStateOf(rows.firstOrNull()?.qr.orEmpty()) }
-    var jenisKayu by remember { mutableStateOf(rows.firstOrNull()?.jenisKayu.orEmpty()) }
-    var diameter by remember { mutableStateOf(rows.firstOrNull()?.diameter.orEmpty()) }
-    var tinggi by remember { mutableStateOf(rows.firstOrNull()?.tinggi.orEmpty()) }
-    var volume by remember { mutableStateOf(rows.firstOrNull()?.volume.orEmpty()) }
-    var latitude by remember { mutableStateOf(rows.firstOrNull()?.latitude.orEmpty()) }
-    var longitude by remember { mutableStateOf(rows.firstOrNull()?.longitude.orEmpty()) }
+    var kodeLhc by remember { mutableStateOf("") }
+    var nomorPetak by remember { mutableStateOf("") }
+    var nomorJalur by remember { mutableStateOf("") }
+    var nomorPohon by remember { mutableStateOf("") }
+    var statusPohon by remember { mutableStateOf("POHON TEBANG") }
+    var dataQr by remember { mutableStateOf("") }
+    var jenisKayu by remember { mutableStateOf("") }
+    var diameter by remember { mutableStateOf("") }
+    var tinggi by remember { mutableStateOf("") }
+    var volume by remember { mutableStateOf("") }
+    var latitude by remember { mutableStateOf("") }
+    var longitude by remember { mutableStateOf("") }
     var importStatus by remember { mutableStateOf("") }
+
+    LaunchedEffect(rows.firstOrNull()) {
+        val first = rows.firstOrNull() ?: return@LaunchedEffect
+        if (kodeLhc.isBlank()) kodeLhc = first.kodeLhc
+        if (nomorPetak.isBlank()) nomorPetak = first.petak
+        if (nomorJalur.isBlank()) nomorJalur = first.jalur
+        if (nomorPohon.isBlank()) nomorPohon = first.nomorPohon
+        if (dataQr.isBlank()) dataQr = first.qr
+        if (jenisKayu.isBlank()) jenisKayu = first.jenisKayu
+        if (diameter.isBlank()) diameter = first.diameter
+        if (tinggi.isBlank()) tinggi = first.tinggi
+        if (volume.isBlank()) volume = first.volume
+        if (latitude.isBlank()) latitude = first.latitude
+        if (longitude.isBlank()) longitude = first.longitude
+        statusPohon = first.status.ifBlank { "POHON TEBANG" }
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -256,7 +319,7 @@ private fun DetailTab(
                 volume = first?.volume.orEmpty()
                 latitude = first?.latitude.orEmpty()
                 longitude = first?.longitude.orEmpty()
-                importStatus = "Berhasil import ${it.size} baris Detail"
+                importStatus = "Berhasil import ${it.size} baris Detail. Data disimpan permanen."
             }
             .onFailure { importStatus = "Gagal import: ${it.message}" }
     }
@@ -274,14 +337,27 @@ private fun DetailTab(
         Field("Tinggi Pohon (meter)", tinggi) { tinggi = it }
         Field("Volume Pohon (m3)", volume) { volume = it }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = latitude, onValueChange = { latitude = it }, label = { Text("Latitude") }, singleLine = true, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = longitude, onValueChange = { longitude = it }, label = { Text("Longitude") }, singleLine = true, modifier = Modifier.weight(1f))
+            OutlinedTextField(
+                value = latitude,
+                onValueChange = { latitude = it },
+                label = { Text("Latitude") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = longitude,
+                onValueChange = { longitude = it },
+                label = { Text("Longitude") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
         }
-        Button(onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
-            Text("Import Detail CSV")
-        }
+        Button(
+            onClick = { launcher.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*")) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Import Detail CSV") }
         if (importStatus.isNotBlank()) StatusText(importStatus)
-        Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Simpan") }
+        Text("Tersimpan: ${rows.size} detail pohon", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -290,38 +366,65 @@ private fun FindTab(
     headerCount: Int,
     petakCount: Int,
     jalurCount: Int,
-    details: List<LhcDetailRow>
+    details: List<LhcDetailRow>,
+    onClearAll: () -> Unit
 ) {
     var search by remember { mutableStateOf("") }
     val filtered = remember(search, details) {
-        if (search.isBlank()) details.take(20)
+        if (search.isBlank()) details.take(50)
         else details.filter {
             it.qr.contains(search, ignoreCase = true) ||
                 it.jenisKayu.contains(search, ignoreCase = true) ||
-                it.nomorPohon.contains(search, ignoreCase = true)
-        }.take(20)
+                it.nomorPohon.contains(search, ignoreCase = true) ||
+                it.petak.contains(search, ignoreCase = true)
+        }.take(50)
     }
 
     FormContainer {
-        Text("Jumlah Detail: ${details.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text("Header: $headerCount | Petak: $petakCount | Jalur: $jalurCount", style = MaterialTheme.typography.bodyMedium)
-        Field("Search barcode / jenis / nomor pohon", search) { search = it }
+        Text(
+            text = "Jumlah Detail: ${details.size}",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "Header: $headerCount | Petak: $petakCount | Jalur: $jalurCount",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = "Data tersimpan di database SIPUHH Tools dan tetap ada setelah aplikasi ditutup.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Field("Search barcode / jenis / nomor pohon / petak", search) { search = it }
+
         if (filtered.isEmpty()) {
-            Text("Belum ada data detail yang diimport.")
+            Text("Belum ada data detail yang tersimpan.")
         } else {
             filtered.forEach { row ->
                 Text(
-                    text = "${row.nomorPohon} • ${row.jenisKayu}\n${row.qr}",
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    text = "${row.nomorPohon} • ${row.jenisKayu} • Petak ${row.petak}\n${row.qr}",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
+        }
+
+        Button(
+            onClick = onClearAll,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Hapus Semua Data LHC")
         }
     }
 }
 
 @Composable
-private fun Field(label: String, value: String, onValueChange: (String) -> Unit) {
+private fun Field(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
@@ -333,10 +436,18 @@ private fun Field(label: String, value: String, onValueChange: (String) -> Unit)
 
 @Composable
 private fun SectionTitle(text: String) {
-    Text(text = text, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+    Text(
+        text = text,
+        style = MaterialTheme.typography.headlineSmall,
+        fontWeight = FontWeight.Bold
+    )
 }
 
 @Composable
 private fun StatusText(text: String) {
-    Text(text = text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.primary
+    )
 }
